@@ -154,4 +154,20 @@ export const deleteEvent = async (eventId: number, authHeaders: any) => {
     }
 };
 
+// Add this function to your existing apiClient.ts file
+
+export const createEventRole = async (eventId: number, roleData: any, authHeaders: any) => {
+    try {
+        const response = await apiClient.post(
+            `/roles/events/${eventId}/roles`, 
+            roleData, 
+            { headers: authHeaders }
+        );
+        return response.data;
+    } catch (error) {
+        console.error('Error creating event role:', error);
+        throw error;
+    }
+};
+
 export default apiClient;

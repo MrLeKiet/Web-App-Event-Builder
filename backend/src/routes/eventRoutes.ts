@@ -7,15 +7,19 @@ import {
   deleteEvent,
   getEventsByType
 } from '../controllers/eventController';
-import { checkAdmin } from '../utils/auth';
+import { checkAdmin, authenticateUser } from '../utils/auth';
 
 const router = Router();
 
 router.get('/', getAllEvents);
 router.get('/type/:type', getEventsByType);
 router.get('/:id', getEventById);
-router.post('/', checkAdmin, createEvent);
-router.put('/:id', checkAdmin, updateEvent);
-router.delete('/:id', checkAdmin, deleteEvent);
+
+// CHANGE THIS LINE - Add authenticateUser middleware before checkAdmin
+router.post('/', authenticateUser, checkAdmin, createEvent);
+
+// Also update these routes for consistency
+router.put('/:id', authenticateUser, checkAdmin, updateEvent);
+router.delete('/:id', authenticateUser, checkAdmin, deleteEvent);
 
 export default router;

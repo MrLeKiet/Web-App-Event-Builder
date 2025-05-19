@@ -6,15 +6,18 @@ import {
     deleteEventRole,
     getRoleRegistrations
 } from '../controllers/eventRolesController';
-import { checkAdmin } from '../utils/auth';
+import { checkAdmin, authenticateUser } from '../utils/auth';
 
 const router = Router();
 
 // Event roles endpoints
 router.get('/events/:eventId/roles', getEventRoles);
-router.post('/events/:eventId/roles', checkAdmin, createEventRole);
-router.put('/events/:eventId/roles/:roleId', checkAdmin, updateEventRole);
-router.delete('/events/:eventId/roles/:roleId', checkAdmin, deleteEventRole);
+
+// Add authenticateUser middleware to these admin routes:
+router.post('/events/:eventId/roles', authenticateUser, checkAdmin, createEventRole);
+router.put('/events/:eventId/roles/:roleId', authenticateUser, checkAdmin, updateEventRole);
+router.delete('/events/:eventId/roles/:roleId', authenticateUser, checkAdmin, deleteEventRole);
+
 router.get('/events/:eventId/roles/:roleId/users', getRoleRegistrations);
 
 export default router;
