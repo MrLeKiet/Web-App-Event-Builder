@@ -89,16 +89,35 @@ export const createEvent = async (req: Request, res: Response) => {
       is_active
     }: EventInput = req.body;
     
+    console.log('Received event data:', {
+      name, host, category, description, start_date, end_date,
+      event_type, donation_goal, donation_goal_description, is_active
+    });
+    
     // Validation
     if (!name || !host || !category || !start_date || !end_date) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     
+    // Format dates properly for MySQL
+    const formattedStartDate = new Date(start_date).toISOString().slice(0, 19).replace('T', ' ');
+    const formattedEndDate = new Date(end_date).toISOString().slice(0, 19).replace('T', ' ');
+    
+    // Handle null values properly
+    const finalDonationGoal = donation_goal !== undefined ? donation_goal : null;
+    const finalDonationDesc = donation_goal_description || null;
+    
+    console.log('Executing SQL with values:', [
+      name, host, category, description, formattedStartDate, formattedEndDate, 
+      event_type || 'volunteer', finalDonationGoal, finalDonationDesc, is_active ?? true
+    ]);
+    
     const [result]: any = await pool.query(
       `INSERT INTO events 
        (name, host, category, description, start_date, end_date, event_type, donation_goal, donation_goal_description, is_active)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name, host, category, description, start_date, end_date, event_type || 'volunteer', donation_goal, donation_goal_description, is_active ?? true]
+      [name, host, category, description, formattedStartDate, formattedEndDate, 
+       event_type || 'volunteer', finalDonationGoal, finalDonationDesc, is_active ?? true]
     );
     
     const newEventId = result.insertId;
@@ -107,7 +126,11 @@ export const createEvent = async (req: Request, res: Response) => {
     res.status(201).json(newEvent[0]);
   } catch (error) {
     console.error('Error creating event:', error);
-    res.status(500).json({ error: 'Failed to create event' });
+    // Provide more details about the error
+    if (error instanceof Error) {
+      console.error('Error details:', error.message);
+    }
+    res.status(500).json({ error: 'Failed to create event. Please check server logs.' });
   }
 };
 
