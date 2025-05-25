@@ -3,7 +3,8 @@ import {
     registerForEvent,
     cancelRegistration,
     getUserRegistrations,
-    getEventRegistrations
+    getEventRegistrations,
+    updateUserRole
 } from '../controllers/registrationController';
 import { authenticateUser, checkSameUser } from '../utils/auth';
 
@@ -17,4 +18,6 @@ router.get('/users/:userId/events', authenticateUser, checkSameUser, getUserRegi
 // Event registrations
 router.get('/events/:eventId/users', getEventRegistrations);
 
+// Add update role of registration
+router.put('/users/:userId/update-role', authenticateUser, checkSameUser, updateUserRole);
 export default router;

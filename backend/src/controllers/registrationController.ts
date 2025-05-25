@@ -5,8 +5,15 @@ import { EventRegistrationInput } from '../types';
 // Register for an event
 export const registerForEvent = async (req: Request, res: Response) => {
     try {
-        const { event_id }: EventRegistrationInput = req.body;
+        const { event_id, role_id } = req.body;
         const user_id = req.params.userId;
+
+        console.log('Registration request received:', {
+            userId: user_id,
+            eventId: event_id,
+            roleId: role_id,
+            body: req.body
+        });
 
         // Validation
         if (!event_id) {
@@ -35,22 +42,109 @@ export const registerForEvent = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'User already registered for this event' });
         }
 
-        // Register for the event
-        const [result]: any = await pool.query(
-            'INSERT INTO event_registrations (user_id, event_id) VALUES (?, ?)',
-            [user_id, event_id]
-        );
+        // If role_id is provided, check if role exists and has capacity
+        if (role_id) {
+            // Convert role_id to number if it's a string
+            const roleIdNum = typeof role_id === 'string' ? parseInt(role_id, 10) : role_id;
+            
+            if (isNaN(roleIdNum)) {
+                return res.status(400).json({ error: 'Invalid role ID format' });
+            }
 
-        const registrationId = result.insertId;
-        const [newRegistration]: any = await pool.query(
-            'SELECT * FROM event_registrations WHERE id = ?',
-            [registrationId]
-        );
+            console.log('Checking role:', roleIdNum);
 
-        res.status(201).json(newRegistration[0]);
+            const [role]: any = await pool.query(
+                'SELECT * FROM event_roles WHERE id = ? AND event_id = ?',
+                [roleIdNum, event_id]
+            );
+
+            if (role.length === 0) {
+                return res.status(404).json({ error: 'Role not found for this event' });
+            }
+
+            // Check if role has available capacity
+            const [registrationCount]: any = await pool.query(
+                'SELECT COUNT(*) as count FROM role_registrations WHERE event_id = ? AND role_id = ? AND status IN ("pending", "approved")',
+                [event_id, roleIdNum]
+            );
+
+            console.log('Role capacity check:', {
+                capacity: role[0].capacity,
+                currentCount: registrationCount[0].count
+            });
+
+            if (registrationCount[0].count >= role[0].capacity) {
+                return res.status(400).json({ error: 'This role is already at full capacity' });
+            }
+        }
+
+        // Begin transaction to ensure data consistency
+        await pool.query('START TRANSACTION');
+
+        try {
+            // Register for the event
+            console.log('Inserting event registration:', user_id, event_id);
+            const [result]: any = await pool.query(
+                'INSERT INTO event_registrations (user_id, event_id) VALUES (?, ?)',
+                [user_id, event_id]
+            );
+
+            // If role_id is provided, also register for the role
+            if (role_id) {
+                const roleIdNum = typeof role_id === 'string' ? parseInt(role_id, 10) : role_id;
+                console.log('Inserting role registration:', user_id, event_id, roleIdNum);
+                
+                await pool.query(
+                    'INSERT INTO role_registrations (user_id, event_id, role_id, status) VALUES (?, ?, ?, "pending")',
+                    [user_id, event_id, roleIdNum]
+                );
+            }
+
+            await pool.query('COMMIT');
+
+            const registrationId = result.insertId;
+            const [newRegistration]: any = await pool.query(
+                'SELECT * FROM event_registrations WHERE id = ?',
+                [registrationId]
+            );
+
+            // Get updated role information with available spots
+            let updatedRoleInfo = null;
+            if (role_id) {
+                const roleIdNum = typeof role_id === 'string' ? parseInt(role_id, 10) : role_id;
+                
+                const [roleInfo]: any = await pool.query(
+                    `SELECT r.*, 
+                     COUNT(rr.id) as filled_spots,
+                     (r.capacity - COUNT(rr.id)) as available_spots
+                     FROM event_roles r
+                     LEFT JOIN role_registrations rr ON r.id = rr.role_id AND rr.status IN ('pending', 'approved')
+                     WHERE r.id = ?
+                     GROUP BY r.id`,
+                    [roleIdNum]
+                );
+                
+                if (roleInfo.length > 0) {
+                    updatedRoleInfo = roleInfo[0];
+                }
+            }
+
+            res.status(201).json({
+                registration: newRegistration[0],
+                role: updatedRoleInfo
+            });
+        } catch (err) {
+            await pool.query('ROLLBACK');
+            console.error('Transaction error:', err);
+            throw err;
+        }
     } catch (error) {
         console.error('Error registering for event:', error);
-        res.status(500).json({ error: 'Failed to register for event' });
+        let errorMessage = 'Failed to register for event';
+        if (error instanceof Error) {
+            errorMessage += `: ${error.message}`;
+        }
+        res.status(500).json({ error: errorMessage });
     }
 };
 
@@ -59,6 +153,12 @@ export const cancelRegistration = async (req: Request, res: Response) => {
     try {
         const user_id = req.params.userId;
         const event_id = req.params.eventId;
+        
+        console.log('Cancellation request received:', {
+            userId: req.params.userId,
+            eventId: req.params.eventId,
+            authUser: (req as any).user?.id
+        });
 
         // Check if registration exists
         const [registrations]: any = await pool.query(
@@ -70,13 +170,76 @@ export const cancelRegistration = async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Registration not found' });
         }
 
-        // Delete registration
-        await pool.query(
-            'DELETE FROM event_registrations WHERE user_id = ? AND event_id = ?',
-            [user_id, event_id]
-        );
+        // Begin transaction
+        await pool.query('START TRANSACTION');
 
-        res.json({ message: 'Registration canceled successfully' });
+        try {
+            // Check if there's a role registration
+            const [roleRegistrations]: any = await pool.query(
+                `SELECT rr.*, r.name as role_name, r.capacity 
+                 FROM role_registrations rr 
+                 JOIN event_roles r ON rr.role_id = r.id
+                 WHERE rr.user_id = ? AND rr.event_id = ?`,
+                [user_id, event_id]
+            );
+
+            let freedRole = null;
+            
+            // First delete any role registrations
+            if (roleRegistrations.length > 0) {
+                const roleReg = roleRegistrations[0];
+                
+                // Store the role info for response
+                freedRole = {
+                    id: roleReg.role_id,
+                    name: roleReg.role_name,
+                    capacity: roleReg.capacity
+                };
+                
+                // Delete from role_registrations table
+                await pool.query(
+                    'DELETE FROM role_registrations WHERE user_id = ? AND event_id = ?',
+                    [user_id, event_id]
+                );
+            }
+
+            // Then delete the event registration
+            await pool.query(
+                'DELETE FROM event_registrations WHERE user_id = ? AND event_id = ?',
+                [user_id, event_id]
+            );
+
+            await pool.query('COMMIT');
+
+            // Get the updated role info if a role was freed
+            if (freedRole) {
+                const [updatedRoleInfo]: any = await pool.query(
+                    `SELECT r.*, 
+                     COUNT(rr.id) as filled_spots,
+                     (r.capacity - COUNT(rr.id)) as available_spots
+                     FROM event_roles r
+                     LEFT JOIN role_registrations rr ON r.id = rr.role_id AND rr.status IN ('pending', 'approved')
+                     WHERE r.id = ?
+                     GROUP BY r.id`,
+                    [freedRole.id]
+                );
+                
+                if (updatedRoleInfo.length > 0) {
+                    freedRole = {
+                        ...freedRole,
+                        ...updatedRoleInfo[0]
+                    };
+                }
+            }
+
+            res.json({ 
+                message: 'Registration canceled successfully',
+                freed_role: freedRole
+            });
+        } catch (err) {
+            await pool.query('ROLLBACK');
+            throw err;
+        }
     } catch (error) {
         console.error('Error canceling registration:', error);
         res.status(500).json({ error: 'Failed to cancel registration' });
@@ -110,7 +273,7 @@ export const getUserRegistrations = async (req: Request, res: Response) => {
     }
 };
 
-// Get event's registered users
+// Get all registrations for an event
 export const getEventRegistrations = async (req: Request, res: Response) => {
     try {
         const event_id = req.params.eventId;
@@ -122,11 +285,16 @@ export const getEventRegistrations = async (req: Request, res: Response) => {
         }
 
         const [registrations]: any = await pool.query(
-            `SELECT u.id, u.username, u.email, u.full_name, er.registration_date
-       FROM users u
-       JOIN event_registrations er ON u.id = er.user_id
-       WHERE er.event_id = ?
-       ORDER BY er.registration_date`,
+            `SELECT u.id, u.username, u.email, u.full_name, er.registration_date,
+            COALESCE(rr.role_id, 0) as role_id, 
+            COALESCE(r.name, 'General Participant') as role_name,
+            rr.status as role_status
+            FROM event_registrations er
+            JOIN users u ON er.user_id = u.id
+            LEFT JOIN role_registrations rr ON er.user_id = rr.user_id AND er.event_id = rr.event_id
+            LEFT JOIN event_roles r ON rr.role_id = r.id
+            WHERE er.event_id = ?
+            ORDER BY er.registration_date DESC`,
             [event_id]
         );
 
@@ -134,5 +302,95 @@ export const getEventRegistrations = async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Error fetching event registrations:', error);
         res.status(500).json({ error: 'Failed to fetch registrations' });
+    }
+};
+
+// Add this new function to update a user's role for an event
+export const updateUserRole = async (req: Request, res: Response) => {
+    try {
+        const userId = req.params.userId;
+        const { event_id, role_id } = req.body;
+        
+        // Check if user is registered for this event
+        const [eventRegistration]: any = await pool.query(
+            'SELECT * FROM event_registrations WHERE user_id = ? AND event_id = ?',
+            [userId, event_id]
+        );
+        
+        if (eventRegistration.length === 0) {
+            return res.status(404).json({ error: 'User is not registered for this event' });
+        }
+        
+        // Check if role exists and has capacity
+        const [role]: any = await pool.query(
+            'SELECT * FROM event_roles WHERE id = ? AND event_id = ?',
+            [role_id, event_id]
+        );
+        
+        if (role.length === 0) {
+            return res.status(404).json({ error: 'Role not found for this event' });
+        }
+        
+        // Check if user already has this specific role
+        const [existingRole]: any = await pool.query(
+            'SELECT * FROM role_registrations WHERE user_id = ? AND event_id = ? AND role_id = ?',
+            [userId, event_id, role_id]
+        );
+        
+        if (existingRole.length > 0) {
+            return res.status(400).json({ error: 'User already has this role for this event' });
+        }
+        
+        // Check role capacity
+        const [registrationCount]: any = await pool.query(
+            'SELECT COUNT(*) as count FROM role_registrations WHERE event_id = ? AND role_id = ? AND status IN ("pending", "approved")',
+            [event_id, role_id]
+        );
+        
+        if (registrationCount[0].count >= role[0].capacity) {
+            return res.status(400).json({ error: 'This role is already at full capacity' });
+        }
+        
+        // Start a transaction
+        await pool.query('START TRANSACTION');
+        
+        try {
+            // First, remove any existing role
+            await pool.query(
+                'DELETE FROM role_registrations WHERE user_id = ? AND event_id = ?',
+                [userId, event_id]
+            );
+            
+            // Then add the new role
+            await pool.query(
+                'INSERT INTO role_registrations (user_id, event_id, role_id, status) VALUES (?, ?, ?, "pending")',
+                [userId, event_id, role_id]
+            );
+            
+            await pool.query('COMMIT');
+            
+            // Get updated role information
+            const [updatedRoleInfo]: any = await pool.query(
+                `SELECT r.*, 
+                 COUNT(rr.id) as filled_spots,
+                 (r.capacity - COUNT(rr.id)) as available_spots
+                 FROM event_roles r
+                 LEFT JOIN role_registrations rr ON r.id = rr.role_id AND rr.status IN ('pending', 'approved')
+                 WHERE r.id = ?
+                 GROUP BY r.id`,
+                [role_id]
+            );
+            
+            res.json({
+                message: 'Role updated successfully',
+                role: updatedRoleInfo[0]
+            });
+        } catch (err) {
+            await pool.query('ROLLBACK');
+            throw err;
+        }
+    } catch (error) {
+        console.error('Error updating role:', error);
+        res.status(500).json({ error: 'Failed to update role' });
     }
 };
