@@ -36,10 +36,10 @@ const CreateEventScreen = () => {
 
     const navigation = useNavigation();
     const { authHeaders, isAdmin } = useAuth();
-    console.log('User admin status:', isAdmin);
-    console.log('Auth headers:', authHeaders);
+    // console.log('User admin status:', isAdmin);
+    // console.log('Auth headers:', authHeaders);
     // Add this near the top of your component
-console.log('Auth context state:', { authHeaders, isAdmin });
+    // console.log('Auth context state:', { authHeaders, isAdmin });
 
 
 
@@ -372,10 +372,6 @@ console.log('Auth context state:', { authHeaders, isAdmin });
                     <View style={styles.radioOption}>
                         <RadioButton value="donation" />
                         <Text>Donation Drive</Text>
-                    </View>
-                    <View style={styles.radioOption}>
-                        <RadioButton value="teaching" />
-                        <Text>Teaching/Workshop</Text>
                     </View>
                     <View style={styles.radioOption}>
                         <RadioButton value="mixed" />

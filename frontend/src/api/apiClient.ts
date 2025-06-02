@@ -170,4 +170,19 @@ export const createEventRole = async (eventId: number, roleData: any, authHeader
     }
 };
 
+export const cancelEventRegistration = async (userId: number, eventId: number, authHeaders: any) => {
+  try {
+    console.log('Canceling registration for user:', userId, 'event:', eventId);
+    // The correct URL should include /registrations prefix to match your route
+    const response = await apiClient.delete(
+      `/registrations/users/${userId}/events/${eventId}`,
+      { headers: authHeaders }
+    );
+    console.log('Cancellation response:', response.data);
+    return response.data;
+  } catch (error) {
+    console.error('Error canceling registration:', error);
+    throw error;
+  }
+};
 export default apiClient;
