@@ -185,4 +185,74 @@ export const cancelEventRegistration = async (userId: number, eventId: number, a
     throw error;
   }
 };
+
+//User Availability
+export const submitAvailability = async (
+  userId: number, 
+  eventId: number,
+  availabilitySlots: Array<{
+    availability_date: string;
+    start_time: string;
+    end_time: string;
+  }>,
+  authHeaders: any
+) => {
+  try {
+    // Log the data being sent for debugging
+    console.log('Submitting availability data:', {
+      userId,
+      eventId,
+      slots: availabilitySlots,
+      headers: authHeaders
+    });
+    
+    // Don't submit if there are no slots
+    if (!availabilitySlots || availabilitySlots.length === 0) {
+      console.log('No availability slots to submit');
+      return []; // Return empty array instead of throwing error
+    }
+    
+    const response = await apiClient.post(
+      `/availability/users/${userId}`,
+      {
+        event_id: eventId,
+        availability_slots: availabilitySlots
+      },
+      { headers: authHeaders }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Error submitting availability:', error);
+    // Don't throw the error further, handle it here
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'response' in error &&
+      (error as any).response &&
+      (error as any).response.data &&
+      (error as any).response.data.error
+    ) {
+      console.error('Server error message:', (error as any).response.data.error);
+    }
+    return []; // Return empty array to prevent further errors
+  }
+};
+
+export const getUserAvailability = async (userId: number, eventId: number, authHeaders: any) => {
+  try {
+    // Make sure authHeaders contains the necessary authentication info
+    if (!authHeaders || !authHeaders.username || !authHeaders.password) {
+      throw new Error('Authentication headers missing');
+    }
+    
+    const response = await apiClient.get(
+      `/availability/users/${userId}/events/${eventId}`,
+      { headers: authHeaders }
+    );
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching user availability:', error);
+    throw error;
+  }
+};
 export default apiClient;

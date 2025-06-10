@@ -43,11 +43,10 @@ export const registerForEvent = async (req: Request, res: Response) => {
         }
 
         // If role_id is provided, check if role exists and has capacity
+        let roleIdNum: number | null = null;
         if (role_id) {
-            // Convert role_id to number if it's a string
-            const roleIdNum = typeof role_id === 'string' ? parseInt(role_id, 10) : role_id;
-            
-            if (isNaN(roleIdNum)) {
+            roleIdNum = typeof role_id === 'string' ? parseInt(role_id, 10) : role_id;
+            if (roleIdNum === null || isNaN(roleIdNum)) {
                 return res.status(400).json({ error: 'Invalid role ID format' });
             }
 
@@ -89,14 +88,19 @@ export const registerForEvent = async (req: Request, res: Response) => {
                 [user_id, event_id]
             );
 
-            // If role_id is provided, also register for the role
-            if (role_id) {
-                const roleIdNum = typeof role_id === 'string' ? parseInt(role_id, 10) : role_id;
+            // Always insert into role_registrations (role_id can be NULL)
+            if (roleIdNum) {
                 console.log('Inserting role registration:', user_id, event_id, roleIdNum);
-                
                 await pool.query(
                     'INSERT INTO role_registrations (user_id, event_id, role_id, status) VALUES (?, ?, ?, "pending")',
                     [user_id, event_id, roleIdNum]
+                );
+            } else {
+                // Insert as attendant (no role)
+                console.log('Inserting attendant registration (no role):', user_id, event_id);
+                await pool.query(
+                    'INSERT INTO role_registrations (user_id, event_id, role_id, status) VALUES (?, ?, NULL, "pending")',
+                    [user_id, event_id]
                 );
             }
 
@@ -110,9 +114,7 @@ export const registerForEvent = async (req: Request, res: Response) => {
 
             // Get updated role information with available spots
             let updatedRoleInfo = null;
-            if (role_id) {
-                const roleIdNum = typeof role_id === 'string' ? parseInt(role_id, 10) : role_id;
-                
+            if (roleIdNum) {
                 const [roleInfo]: any = await pool.query(
                     `SELECT r.*, 
                      COUNT(rr.id) as filled_spots,
@@ -123,7 +125,6 @@ export const registerForEvent = async (req: Request, res: Response) => {
                      GROUP BY r.id`,
                     [roleIdNum]
                 );
-                
                 if (roleInfo.length > 0) {
                     updatedRoleInfo = roleInfo[0];
                 }
@@ -174,34 +175,32 @@ export const cancelRegistration = async (req: Request, res: Response) => {
         await pool.query('START TRANSACTION');
 
         try {
-            // Check if there's a role registration
+            // Get any role registration (including attendant)
             const [roleRegistrations]: any = await pool.query(
                 `SELECT rr.*, r.name as role_name, r.capacity 
                  FROM role_registrations rr 
-                 JOIN event_roles r ON rr.role_id = r.id
+                 LEFT JOIN event_roles r ON rr.role_id = r.id
                  WHERE rr.user_id = ? AND rr.event_id = ?`,
                 [user_id, event_id]
             );
 
             let freedRole = null;
-            
-            // First delete any role registrations
-            if (roleRegistrations.length > 0) {
+
+            // If there is a role (not attendant), store info for response
+            if (roleRegistrations.length > 0 && roleRegistrations[0].role_id) {
                 const roleReg = roleRegistrations[0];
-                
-                // Store the role info for response
                 freedRole = {
                     id: roleReg.role_id,
                     name: roleReg.role_name,
                     capacity: roleReg.capacity
                 };
-                
-                // Delete from role_registrations table
-                await pool.query(
-                    'DELETE FROM role_registrations WHERE user_id = ? AND event_id = ?',
-                    [user_id, event_id]
-                );
             }
+
+            // Always delete from role_registrations (covers both role and attendant)
+            await pool.query(
+                'DELETE FROM role_registrations WHERE user_id = ? AND event_id = ?',
+                [user_id, event_id]
+            );
 
             // Then delete the event registration
             await pool.query(

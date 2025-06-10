@@ -7,6 +7,8 @@ import { useAuth } from '../context/AuthContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import axios from 'axios';
 import { cloneDeep } from 'lodash';
+import TimeSlotPicker from '../components/TimeSlotPicker';
+import { submitAvailability, getUserAvailability } from '../api/apiClient';
 
 // Define the type for the event
 interface Event {
@@ -130,7 +132,22 @@ const EventDetailScreen = () => {
     const [error, setError] = useState('');
     const [bannerVisible, setBannerVisible] = useState(true);
     const [refreshCounter, setRefreshCounter] = useState(0);
-    
+
+    //availability slots for the user
+    const [availabilitySlots, setAvailabilitySlots] = useState<Array<{
+        date: string;
+        startTime: string;
+        endTime: string;
+    }>>([]);
+
+    // User availability state
+    const [userAvailability, setUserAvailability] = useState<Array<{
+        id: number;
+        availability_date: string;
+        start_time: string;
+        end_time: string;
+    }>>([]);
+
     // Dialog states
     const [cancelDialogVisible, setCancelDialogVisible] = useState(false);
     const [registerDialogVisible, setRegisterDialogVisible] = useState(false);
@@ -141,6 +158,11 @@ const EventDetailScreen = () => {
     const navigation = useNavigation();
     const { user, authHeaders } = useAuth();
     const windowWidth = Dimensions.get('window').width;
+
+    // Debug useEffect to log auth state
+    useEffect(() => {
+        console.log('Auth headers for debugging:', authHeaders);
+    }, [authHeaders]);
 
     const { eventId } = route.params;
 
@@ -169,6 +191,8 @@ const EventDetailScreen = () => {
         }
     };
 
+    // Update the getUserRoleForEvent function
+
     const getUserRoleForEvent = async (userId: number, eventId: number, authHeaders: any) => {
         try {
             const response = await axios.get(
@@ -178,11 +202,21 @@ const EventDetailScreen = () => {
             return response.data;
         } catch (error) {
             console.error('Error fetching user role for event:', error);
+            // If it's a 404, this is normal for users without roles - don't treat as error
+            if (
+                typeof error === 'object' &&
+                error !== null &&
+                'response' in error &&
+                (error as any).response &&
+                (error as any).response.status === 404
+            ) {
+                console.log('User has no specific role for this event');
+            }
             return null;
         }
     };
 
-//Check if user is registered for the event and fetch role if applicable
+    //Check if user is registered for the event and fetch role if applicable
     const checkRegistrationStatus = async () => {
         if (!user) {
             return;
@@ -191,12 +225,12 @@ const EventDetailScreen = () => {
             console.log('Checking registration status for user:', user.id, 'event:', eventId);
             const userRegistrations = await getUserRegistrations(user.id, authHeaders);
             console.log('User registrations:', userRegistrations);
-            
+
             // The backend returns event objects, so we need to check event.id
             const registered = userRegistrations.some((event: any) => event.id === Number(eventId));
             console.log('Is registered:', registered);
             setIsRegistered(registered);
-            
+
             // If registered, check for role
             if (registered) {
                 const roleInfo = await getUserRoleForEvent(user.id, Number(eventId), authHeaders);
@@ -209,13 +243,14 @@ const EventDetailScreen = () => {
             console.error('Error checking registration status:', error);
         }
     };
-// Handle registration button click
+
+    // Handle registration button click
     const handleRegisterButtonClick = () => {
         if (!user) {
             navigation.navigate('Login' as never);
             return;
         }
-        
+
         // If the event has roles, show the role selection dialog
         if (event?.roles && event.roles.length > 0) {
             setSelectedRole(null);
@@ -225,211 +260,228 @@ const EventDetailScreen = () => {
             handleRegisterConfirm(null);
         }
     };
-// Handle registration confirmation with selected role
+
+    // Handle registration confirmation with selected role
     const handleRegisterConfirm = async (roleId: string | null) => {
-    if (!user) {
-        showErrorDialog('Registration Failed', 'You must be logged in to register for this event.');
-        return;
-    }
-    try {
-        setRegistering(true);
-        
-        // Check if user is already registered for this event
-        let isAlreadyRegistered = false;
-        try {
-            const userRegistrations = await getUserRegistrations(user.id, authHeaders);
-            isAlreadyRegistered = userRegistrations.some((event: any) => event.id === Number(eventId));
-        } catch (err) {
-            console.error('Error checking registration status:', err);
+        if (!user) {
+            showErrorDialog('Registration Failed', 'You must be logged in to register for this event.');
+            return;
         }
-        
-        let response;
-        let endpoint;
-        let payload;
-        
-        if (isAlreadyRegistered) {
-            // If already registered, update role instead of creating a new registration
-            if (roleId) {
-                // Handle role change
-                endpoint = `${getApiUrl()}/role-registrations/users/${user.id}/update-role`;
-                payload = { event_id: eventId, role_id: roleId };
-                
-                console.log('Updating role for existing registration');
-                response = await axios.put(
+        try {
+            setRegistering(true);
+
+            // Check if user is already registered for this event
+            let isAlreadyRegistered = false;
+            try {
+                const userRegistrations = await getUserRegistrations(user.id, authHeaders);
+                isAlreadyRegistered = userRegistrations.some((event: any) => event.id === Number(eventId));
+            } catch (err) {
+                console.error('Error checking registration status:', err);
+            }
+
+            let response;
+            let endpoint;
+            let payload;
+
+            if (isAlreadyRegistered) {
+                // If already registered, update role instead of creating a new registration
+                if (roleId) {
+                    // Handle role change
+                    endpoint = `${getApiUrl()}/role-registrations/users/${user.id}/update-role`;
+                    payload = { event_id: eventId, role_id: roleId };
+
+                    console.log('Updating role for existing registration');
+                    response = await axios.put(
+                        endpoint,
+                        payload,
+                        { headers: authHeaders || {} }
+                    );
+                } else {
+                    // User chose to attend as general participant - remove role if exists
+                    if (userRoleId) {
+                        endpoint = `${getApiUrl()}/role-registrations/users/${user.id}/events/${eventId}/roles/${userRoleId}`;
+                        console.log('Removing role from existing registration');
+                        response = await axios.delete(
+                            endpoint,
+                            { headers: authHeaders || {} }
+                        );
+                    } else {
+                        // Already registered with no role, nothing to do
+                        showSuccessDialog('You are already registered for this event');
+                        setRegistering(false);
+                        return;
+                    }
+                }
+            } else {
+                // New registration
+                endpoint = `${getApiUrl()}/registrations/users/${user.id}/register`;
+                payload = roleId ? { event_id: eventId, role_id: roleId } : { event_id: eventId };
+
+                console.log('Creating new registration');
+                response = await axios.post(
                     endpoint,
                     payload,
                     { headers: authHeaders || {} }
                 );
-            } else {
-                // User chose to attend as general participant - remove role if exists
-                if (userRoleId) {
-                    endpoint = `${getApiUrl()}/role-registrations/users/${user.id}/events/${eventId}/roles/${userRoleId}`;
-                    console.log('Removing role from existing registration');
-                    response = await axios.delete(
-                        endpoint,
-                        { headers: authHeaders || {} }
-                    );
-                } else {
-                    // Already registered with no role, nothing to do
-                    showSuccessDialog('You are already registered for this event');
-                    setRegistering(false);
-                    return;
-                }
             }
-        } else {
-            // New registration
-            endpoint = `${getApiUrl()}/registrations/users/${user.id}/register`;
-            payload = roleId ? { event_id: eventId, role_id: roleId } : { event_id: eventId };
-            
-            console.log('Creating new registration');
-            response = await axios.post(
-                endpoint,
-                payload,
-                { headers: authHeaders || {} }
-            );
-        }
-        
-        console.log('Registration/update response:', response.data);
-        
-        // Update local state to reflect the registration
-        setIsRegistered(true);
-        
-        // Store role ID if applicable or clear it if no role
-        setUserRoleId(roleId ? Number(roleId) : null);
-        
-        // If a role was selected, update its available slots in the UI
-        if (event?.roles) {
-            const updatedEvent = cloneDeep(event);
-            
-            // First reset previous role counts if changing roles
-            if (
-                userRoleId &&
-                userRoleId !== (roleId ? Number(roleId) : null) &&
-                updatedEvent.roles
-            ) {
-                const oldRoleIndex = updatedEvent.roles.findIndex(r => r.id === userRoleId);
-                if (oldRoleIndex !== undefined && oldRoleIndex !== -1) {
-                    updatedEvent.roles[oldRoleIndex].filled_spots = Math.max(0, updatedEvent.roles[oldRoleIndex].filled_spots - 1);
-                    updatedEvent.roles[oldRoleIndex].available_spots += 1;
-                }
-            }
-            
-            // Then update new role counts
-            if (roleId && updatedEvent.roles) {
-                const roleIndex = updatedEvent.roles.findIndex(r => r.id === Number(roleId));
-                if (roleIndex !== undefined && roleIndex !== -1) {
-                    updatedEvent.roles[roleIndex].filled_spots += 1;
-                    updatedEvent.roles[roleIndex].available_spots -= 1;
-                }
-            }
-            
-            setEvent(updatedEvent);
-        }
-        
-        setRegisterDialogVisible(false);
-        
-        // Show success dialog
-        showSuccessDialog(isAlreadyRegistered 
-            ? 'Your role has been updated successfully!' 
-            : 'You have successfully registered for this event!');
-        
-        // Force a refresh of the event data
-        setRefreshCounter(prev => prev + 1);
-    } catch (err: any) {
-        console.error('Failed to register for event:', err);
 
-        let errorMessage = 'Failed to register for this event. Please try again.';
-        if (err.response && err.response.data && err.response.data.error) {
-            errorMessage = err.response.data.error;
-        }
+            console.log('Registration/update response:', response.data);
 
-        showErrorDialog('Registration Failed', errorMessage);
-    } finally {
-        setRegistering(false);
-    }
-};
+            // Update local state to reflect the registration
+            setIsRegistered(true);
+
+            // Store role ID if applicable or clear it if no role
+            setUserRoleId(roleId ? Number(roleId) : null);
+
+            // If a role was selected, update its available slots in the UI
+            if (event?.roles) {
+                const updatedEvent = cloneDeep(event);
+
+                // First reset previous role counts if changing roles
+                if (
+                    userRoleId &&
+                    userRoleId !== (roleId ? Number(roleId) : null) &&
+                    updatedEvent.roles
+                ) {
+                    const oldRoleIndex = updatedEvent.roles.findIndex(r => r.id === userRoleId);
+                    if (oldRoleIndex !== undefined && oldRoleIndex !== -1) {
+                        updatedEvent.roles[oldRoleIndex].filled_spots = Math.max(0, updatedEvent.roles[oldRoleIndex].filled_spots - 1);
+                        updatedEvent.roles[oldRoleIndex].available_spots += 1;
+                    }
+                }
+
+                // Then update new role counts
+                if (roleId && updatedEvent.roles) {
+                    const roleIndex = updatedEvent.roles.findIndex(r => r.id === Number(roleId));
+                    if (roleIndex !== undefined && roleIndex !== -1) {
+                        updatedEvent.roles[roleIndex].filled_spots += 1;
+                        updatedEvent.roles[roleIndex].available_spots -= 1;
+                    }
+                }
+
+                setEvent(updatedEvent);
+            }
+
+            // After successful registration, submit availability
+            if (availabilitySlots.length > 0 && event) {
+                try {
+                    // Convert slots to the format expected by the API
+                    const formattedSlots = availabilitySlots.map(slot => ({
+                        availability_date: slot.date,
+                        start_time: slot.startTime,
+                        end_time: slot.endTime
+                    }));
+
+                    await submitAvailability(user.id, Number(eventId), formattedSlots, authHeaders);
+                } catch (availabilityError) {
+                    console.error('Error submitting availability:', availabilityError);
+                    // Don't fail the registration if availability submission fails
+                }
+            }
+
+            setRegisterDialogVisible(false);
+
+            // Show success dialog
+            showSuccessDialog(isAlreadyRegistered
+                ? 'Your role has been updated successfully!'
+                : 'You have successfully registered for this event!');
+
+            // Force a refresh of the event data
+            setRefreshCounter(prev => prev + 1);
+        } catch (err: any) {
+            console.error('Failed to register for event:', err);
+
+            let errorMessage = 'Failed to register for this event. Please try again.';
+            if (err.response && err.response.data && err.response.data.error) {
+                errorMessage = err.response.data.error;
+            }
+
+            showErrorDialog('Registration Failed', errorMessage);
+        } finally {
+            setRegistering(false);
+        }
+    };
 
     const handleCancelButtonClick = () => {
         if (!user) {
             navigation.navigate('Login' as never);
             return;
         }
-        
+
         setCancelDialogVisible(true);
     };
 
     const handleCancelConfirm = async () => {
-    try {
-        console.log('Starting cancellation process');
-        setRegistering(true);
+        try {
+            console.log('Starting cancellation process');
+            setRegistering(true);
 
-        if (!user) {
-            showErrorDialog('Cancellation Failed', 'You must be logged in to cancel your registration.');
-            setRegistering(false);
-            return;
-        }
-        
-        console.log(`Calling API: DELETE ${getApiUrl()}/registrations/users/${user.id}/events/${eventId}`);
-        
-        const response = await axios.delete(
-            `${getApiUrl()}/registrations/users/${user.id}/events/${eventId}`,
-            { headers: authHeaders || {} }
-        );
-        
-        console.log('Cancellation response:', response.data);
-        
-        // If the user had a role, update that role's capacity in the UI
-        if (userRoleId && event?.roles) {
-            const updatedEvent = cloneDeep(event);
-            const roleIndex = updatedEvent.roles?.findIndex(r => r.id === userRoleId);
-            
-            if (roleIndex !== undefined && roleIndex !== -1) {
-                if (updatedEvent.roles) {
-                    updatedEvent.roles[roleIndex].filled_spots = Math.max(0, updatedEvent.roles[roleIndex].filled_spots - 1);
-                    updatedEvent.roles[roleIndex].available_spots += 1;
-                }
-                setEvent(updatedEvent);
+            if (!user) {
+                showErrorDialog('Cancellation Failed', 'You must be logged in to cancel your registration.');
+                setRegistering(false);
+                return;
             }
-            
-            // Reset user role
-            setUserRoleId(null);
+
+            console.log(`Calling API: DELETE ${getApiUrl()}/registrations/users/${user.id}/events/${eventId}`);
+
+            const response = await axios.delete(
+                `${getApiUrl()}/registrations/users/${user.id}/events/${eventId}`,
+                { headers: authHeaders || {} }
+            );
+
+            console.log('Cancellation response:', response.data);
+
+            // If the user had a role, update that role's capacity in the UI
+            if (userRoleId && event?.roles) {
+                const updatedEvent = cloneDeep(event);
+                const roleIndex = updatedEvent.roles?.findIndex(r => r.id === userRoleId);
+                if (roleIndex !== undefined && roleIndex !== -1) {
+                    if (updatedEvent.roles) {
+                        updatedEvent.roles[roleIndex].filled_spots = Math.max(0, updatedEvent.roles[roleIndex].filled_spots - 1);
+                        updatedEvent.roles[roleIndex].available_spots += 1;
+                    }
+                    setEvent(updatedEvent);
+                }
+
+                // Reset user role
+                setUserRoleId(null);
+            }
+
+            // Force state update
+            setIsRegistered(false);
+            setCancelDialogVisible(false);
+
+            // Show success dialog
+            showSuccessDialog('Your registration has been canceled.');
+
+            // Force a refresh of the event data
+            setRefreshCounter(prev => prev + 1);
+        } catch (err: any) {
+            console.error('Failed to cancel registration:', err);
+
+            if (err.response) {
+                console.error('Error response:', {
+                    data: err.response.data,
+                    status: err.response.status
+                });
+            }
+
+            let errorMessage = 'Failed to cancel registration. Please try again.';
+            if (err.response && err.response.data && err.response.data.error) {
+                errorMessage = err.response.data.error;
+            }
+
+            showErrorDialog('Cancellation Failed', errorMessage);
+        } finally {
+            setRegistering(false);
         }
-        
-        // Force state update
-        setIsRegistered(false);
-        setCancelDialogVisible(false);
-        
-        // Show success dialog
-        showSuccessDialog('Your registration has been canceled.');
-        
-        // Force a refresh of the event data
-        setRefreshCounter(prev => prev + 1);
-    } catch (err: any) {
-        console.error('Failed to cancel registration:', err);
-        
-        if (err.response) {
-            console.error('Error response:', {
-                data: err.response.data,
-                status: err.response.status
-            });
-        }
-        
-        let errorMessage = 'Failed to cancel registration. Please try again.';
-        if (err.response && err.response.data && err.response.data.error) {
-            errorMessage = err.response.data.error;
-        }
-        
-        showErrorDialog('Cancellation Failed', errorMessage);
-    } finally {
-        setRegistering(false);
-    }
-};
+    };
 
 
     // Simple success dialog
     const [successDialogVisible, setSuccessDialogVisible] = useState(false);
     const [successMessage, setSuccessMessage] = useState('');
-    
+
     const showSuccessDialog = (message: string) => {
         setSuccessMessage(message);
         setSuccessDialogVisible(true);
@@ -439,7 +491,7 @@ const EventDetailScreen = () => {
     const [errorDialogVisible, setErrorDialogVisible] = useState(false);
     const [errorTitle, setErrorTitle] = useState('');
     const [errorMessage, setErrorMessage] = useState('');
-    
+
     const showErrorDialog = (title: string, message: string) => {
         setErrorTitle(title);
         setErrorMessage(message);
@@ -452,15 +504,44 @@ const EventDetailScreen = () => {
         console.log('User state:', user);
     }, []);
 
+    // Fetch user availability for the event
+    const fetchUserAvailability = async () => {
+        if (!user || !eventId) return;
+
+        try {
+            const availability = await getUserAvailability(user.id, Number(eventId), authHeaders);
+            setUserAvailability(availability);
+
+            // Convert to the format used by the TimeSlotPicker
+            const formattedSlots = availability.map((slot: any) => ({
+                date: slot.availability_date,
+                startTime: slot.start_time,
+                endTime: slot.end_time
+            }));
+
+            setAvailabilitySlots(formattedSlots);
+        } catch (error) {
+            console.error('Error fetching user availability:', error);
+            // Don't show an error to the user, just handle it silently
+            // This is expected behavior if the user has no availability data yet
+            setUserAvailability([]);
+            setAvailabilitySlots([]);
+        }
+    };
+
+    // Update the useEffect that fetches event details to also fetch availability
     useEffect(() => {
         const fetchEventDetails = async () => {
             try {
                 setLoading(true);
                 const eventData = await fetchEventById(eventId);
                 setEvent(eventData);
-                
+
                 if (user?.id) {
+                    // Existing code...
                     await checkRegistrationStatus();
+                    // Add this:
+                    await fetchUserAvailability();
                 }
             } catch (err: any) {
                 setError('Failed to load event details');
@@ -578,25 +659,25 @@ const EventDetailScreen = () => {
                                             <Card.Content>
                                                 <View style={styles.roleTitleRow}>
                                                     <Text style={styles.roleName}>{role.name}</Text>
-                                                    <Chip 
-                                                        mode="outlined" 
+                                                    <Chip
+                                                        mode="outlined"
                                                         style={[
                                                             styles.availabilityChip,
                                                             role.available_spots <= 0 ? { backgroundColor: '#ffcdd2' } : null
                                                         ]}
                                                     >
-                                                        {role.available_spots > 0 
-                                                            ? `${role.available_spots} spots left` 
+                                                        {role.available_spots > 0
+                                                            ? `${role.available_spots} spots left`
                                                             : 'Full'}
                                                     </Chip>
                                                 </View>
                                                 <Text style={styles.roleDescription}>{role.description}</Text>
                                                 <View style={styles.capacityIndicator}>
-                                                    <View 
+                                                    <View
                                                         style={[
                                                             styles.capacityBar,
                                                             { width: `${(role.filled_spots / role.capacity) * 100}%` }
-                                                        ]} 
+                                                        ]}
                                                     />
                                                     <Text style={styles.capacityText}>
                                                         {role.filled_spots}/{role.capacity} filled
@@ -609,6 +690,32 @@ const EventDetailScreen = () => {
                             </>
                         )}
 
+                        {isRegistered && userAvailability.length > 0 && (
+                            <View style={styles.availabilitySection}>
+                                <Text style={styles.sectionTitle}>Your Available Times</Text>
+                                {userAvailability.map((slot, index) => {
+                                    const date = new Date(slot.availability_date);
+                                    const startTime = new Date(`${slot.availability_date}T${slot.start_time}`);
+                                    const endTime = new Date(`${slot.availability_date}T${slot.end_time}`);
+
+                                    return (
+                                        <View key={index} style={styles.availabilitySlot}>
+                                            <MaterialCommunityIcons name="clock-outline" size={18} color="#0066cc" />
+                                            <View style={styles.availabilityDetails}>
+                                                <Text style={styles.availabilityDate}>
+                                                    {date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                                                </Text>
+                                                <Text style={styles.availabilityTime}>
+                                                    {startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} -
+                                                    {endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    );
+                                })}
+                            </View>
+                        )}
+
                         <View style={styles.impactSection}>
                             <Text style={styles.sectionTitle}>Your Impact</Text>
                             <Paragraph style={styles.impactText}>
@@ -618,7 +725,7 @@ const EventDetailScreen = () => {
                         </View>
 
                         {/* Debug info to display registration status */}
-                        <Text style={{color: 'gray', marginBottom: 8}}>
+                        <Text style={{ color: 'gray', marginBottom: 8 }}>
                             Registration status: {isRegistered ? 'Registered' : 'Not registered'}
                             {isRegistered && userRoleId ? ` (Role ID: ${userRoleId})` : ''}
                         </Text>
@@ -678,38 +785,55 @@ const EventDetailScreen = () => {
             {/* Role Selection Dialog for Registration */}
             <Portal>
                 <Dialog visible={registerDialogVisible} onDismiss={() => setRegisterDialogVisible(false)}>
-                    <Dialog.Title>Choose Your Role</Dialog.Title>
-                    <Dialog.Content>
-                        <RadioButton.Group onValueChange={value => setSelectedRole(value)} value={selectedRole || ''}>
-                            <View style={styles.roleOption}>
-                                <RadioButton value="" />
-                                <Text>Attend as general participant</Text>
-                            </View>
-                            {event?.roles?.map(role => (
-                                <View key={role.id} style={styles.roleOption}>
-                                    <RadioButton 
-                                        value={String(role.id)} 
-                                        disabled={role.available_spots <= 0}
-                                    />
-                                    <View style={styles.roleOptionContent}>
-                                        <Text style={[
-                                            styles.roleOptionTitle,
-                                            role.available_spots <= 0 ? {color: '#aaa'} : null
-                                        ]}>
-                                            {role.name} {role.available_spots <= 0 ? '(Full)' : ''}
-                                        </Text>
-                                        <Text style={styles.roleOptionDescription}>
-                                            {role.description} ({role.filled_spots}/{role.capacity} filled)
-                                        </Text>
+                    <Dialog.Title>Register for Event</Dialog.Title>
+                    <Dialog.ScrollArea>
+                        <ScrollView style={{ maxHeight: 400 }}>
+                            <Dialog.Content>
+                                <Text style={{ marginBottom: 16 }}>Please select a role (optional):</Text>
+                                <RadioButton.Group onValueChange={value => setSelectedRole(value)} value={selectedRole || ''}>
+                                    <View style={styles.roleOption}>
+                                        <RadioButton value="" />
+                                        <Text>Attend as general participant</Text>
                                     </View>
-                                </View>
-                            ))}
-                        </RadioButton.Group>
-                    </Dialog.Content>
+                                    {event?.roles?.map(role => (
+                                        <View key={role.id} style={styles.roleOption}>
+                                            <RadioButton
+                                                value={String(role.id)}
+                                                disabled={role.available_spots <= 0}
+                                            />
+                                            <View style={styles.roleOptionContent}>
+                                                <Text style={[
+                                                    styles.roleOptionTitle,
+                                                    role.available_spots <= 0 ? { color: '#aaa' } : null
+                                                ]}>
+                                                    {role.name} {role.available_spots <= 0 ? '(Full)' : ''}
+                                                </Text>
+                                                <Text style={styles.roleOptionDescription}>
+                                                    {role.description} ({role.filled_spots}/{role.capacity} filled)
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    ))}
+                                </RadioButton.Group>
+
+                                <Divider style={{ marginVertical: 16 }} />
+
+                                {/* Add Time Slot Picker */}
+                                {event && (
+                                    <TimeSlotPicker
+                                        eventStartDate={new Date(event.start_date)}
+                                        eventEndDate={new Date(event.end_date)}
+                                        selectedSlots={availabilitySlots}
+                                        onSlotsChange={setAvailabilitySlots}
+                                    />
+                                )}
+                            </Dialog.Content>
+                        </ScrollView>
+                    </Dialog.ScrollArea>
                     <Dialog.Actions>
                         <Button onPress={() => setRegisterDialogVisible(false)}>Cancel</Button>
-                        <Button 
-                            onPress={() => handleRegisterConfirm(selectedRole)} 
+                        <Button
+                            onPress={() => handleRegisterConfirm(selectedRole)}
                             disabled={registering}
                             loading={registering}
                         >
@@ -925,6 +1049,28 @@ const styles = StyleSheet.create({
     roleOptionDescription: {
         color: '#666',
         fontSize: 14,
+    },
+    availabilitySection: {
+        marginTop: 16,
+        padding: 16,
+        backgroundColor: '#f0f7ff',
+        borderRadius: 8,
+    },
+    availabilitySlot: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    availabilityDetails: {
+        marginLeft: 8,
+    },
+    availabilityDate: {
+        fontWeight: 'bold',
+        fontSize: 14,
+    },
+    availabilityTime: {
+        fontSize: 13,
+        color: '#555',
     },
 });
 

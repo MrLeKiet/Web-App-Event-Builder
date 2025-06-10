@@ -172,3 +172,40 @@ export const updateRoleRegistrationStatus = async (req: Request, res: Response) 
         res.status(500).json({ error: 'Failed to update status' });
     }
 };
+
+// Get user's role for a specific event
+export const getUserRoleForEvent = async (req: Request, res: Response) => {
+  try {
+    const userId = req.params.userId;
+    const eventId = req.params.eventId;
+    
+    // Check if user exists
+    const [user]: any = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+    if (user.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Check if event exists
+    const [event]: any = await pool.query('SELECT * FROM events WHERE id = ?', [eventId]);
+    if (event.length === 0) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+    
+    const [roleRegistration]: any = await pool.query(
+      `SELECT rr.*, r.name as role_name, r.description as role_description
+       FROM role_registrations rr
+       JOIN event_roles r ON rr.role_id = r.id
+       WHERE rr.user_id = ? AND rr.event_id = ?`,
+      [userId, eventId]
+    );
+    
+    if (roleRegistration.length === 0) {
+      return res.status(404).json({ error: 'No role registration found for this user and event' });
+    }
+    
+    res.json(roleRegistration[0]);
+  } catch (error) {
+    console.error('Error fetching user role for event:', error);
+    res.status(500).json({ error: 'Failed to fetch role' });
+  }
+};

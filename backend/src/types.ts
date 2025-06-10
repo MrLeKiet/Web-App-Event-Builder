@@ -137,3 +137,23 @@ export interface EventDonations {
   donations: Donation[];
   summary: DonationSummary[];
 }
+
+//User Availability
+export interface UserAvailability {
+  id?: number;
+  user_id: number;
+  event_id: number;
+  availability_date: string;
+  start_time: string;
+  end_time: string;
+  created_at?: Date;
+}
+
+export interface UserAvailabilityInput {
+  event_id: number;
+  availability_slots: Array<{
+    availability_date: string;
+    start_time: string;
+    end_time: string;
+  }>;
+}
