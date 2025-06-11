@@ -3,7 +3,8 @@ import {
     registerForRole,
     unregisterFromRole,
     getUserRoleRegistrations,
-    updateRoleRegistrationStatus
+    updateRoleRegistrationStatus,
+    getUserRoleForEvent
 } from '../controllers/roleRegistrationController';
 import { authenticateUser, checkSameUser, checkAdmin } from '../utils/auth';
 
@@ -14,5 +15,6 @@ router.post('/users/:userId/roles', authenticateUser, checkSameUser, registerFor
 router.delete('/users/:userId/events/:eventId/roles/:roleId', authenticateUser, checkSameUser, unregisterFromRole);
 router.get('/users/:userId/roles', authenticateUser, checkSameUser, getUserRoleRegistrations);
 router.put('/registrations/:registrationId/status', checkAdmin, updateRoleRegistrationStatus);
+router.get('/users/:userId/events/:eventId', authenticateUser, checkSameUser, getUserRoleForEvent);
 
 export default router;
